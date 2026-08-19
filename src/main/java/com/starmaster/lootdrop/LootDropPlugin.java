@@ -1,4 +1,4 @@
-package com.starmaster.lootdrop; 
+package com.starmaster.lootdrop;
 
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
@@ -10,35 +10,49 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.entity.ArmorStand;
+import org.bukkit.entity.Display;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.TextDisplay;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
+import org.bukkit.event.player.PlayerArmorStandManipulateEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.scheduler.BukkitTask;
 
 import java.util.*;
 import java.util.stream.Collectors;
 
 public class LootDropPlugin extends JavaPlugin implements Listener, TabCompleter {
 
-    // Main collection to track active loot drops by their ArmorStand UUID
     private final Map<UUID, LootDropEntity> activeLootDrops = new HashMap<>();
-    
-    // Configuration fields
+
     private double maxHealth;
     private String displayName;
     private int particleHeight;
     private int fallHeight;
     private int fallDurationTicks;
-    private boolean useCustomHitSound; 
+    private boolean useCustomHitSound;
+    private boolean broadcastCoordinates;
+    private String spawnMessage;
+    private String spawnMessageNoCoords;
+    private int entityDespawnSeconds;
+    private double itemDropRadius;
+
+    private boolean autoSpawnEnabled;
+    private int autoSpawnIntervalSeconds;
+    private int autoSpawnRadius;
+    private int autoSpawnMinPlayers;
+    private List<String> autoSpawnWorlds;
+    private BukkitTask autoSpawnTask;
 
     @Override
     public void onEnable() {
-        // Ensure config is saved and loaded first
         saveDefaultConfig();
         loadConfig();
 
@@ -49,7 +63,11 @@ public class LootDropPlugin extends JavaPlugin implements Listener, TabCompleter
 
     @Override
     public void onDisable() {
-        // Clean up all active loot drops when the plugin shuts down
+        if (autoSpawnTask != null) {
+            autoSpawnTask.cancel();
+            autoSpawnTask = null;
+        }
+
         for (LootDropEntity lootDrop : activeLootDrops.values()) {
             lootDrop.remove();
         }
@@ -57,23 +75,100 @@ public class LootDropPlugin extends JavaPlugin implements Listener, TabCompleter
         getLogger().info("LootDrop Plugin has been disabled!");
     }
 
-    /**
-     * Loads configuration values from config.yml.
-     */
     private void loadConfig() {
-        reloadConfig(); // Ensure we load the latest from disk
+        reloadConfig();
         maxHealth = getConfig().getDouble("loot-drop.max-health", 500.0);
         displayName = getConfig().getString("loot-drop.display-name", "&6&lLOOT DROP");
         particleHeight = getConfig().getInt("loot-drop.particle-height", 50);
-        
-        // Load falling animation settings
+
         fallHeight = getConfig().getInt("loot-drop.fall-animation.height", 20);
         fallDurationTicks = getConfig().getInt("loot-drop.fall-animation.duration-ticks", 60);
-        
-        // Load custom hit sound setting (Default to true for backward compatibility)
+
         useCustomHitSound = getConfig().getBoolean("loot-drop.use-custom-hit-sound", true);
 
+        broadcastCoordinates = getConfig().getBoolean("loot-drop.broadcast-coordinates", true);
+        spawnMessage = getConfig().getString("loot-drop.spawn-message",
+            "&6&l[LOOT DROP] &eA loot drop is incoming! &7[%x%, %y%, %z% &7in &f%world%&7]");
+        spawnMessageNoCoords = getConfig().getString("loot-drop.spawn-message-no-coords",
+            "&6&l[LOOT DROP] &eA loot drop is incoming! &eFind the landing site!");
+
+        entityDespawnSeconds = getConfig().getInt("loot-drop.entity-despawn-seconds", 300);
+        itemDropRadius = getConfig().getDouble("loot-drop.item-drop-radius", 3.0);
+
+        autoSpawnEnabled = getConfig().getBoolean("auto-spawn.enabled", true);
+        autoSpawnIntervalSeconds = getConfig().getInt("auto-spawn.spawn-interval-seconds", 1800);
+        autoSpawnRadius = getConfig().getInt("auto-spawn.spawn-radius", 500);
+        autoSpawnMinPlayers = getConfig().getInt("auto-spawn.min-players-online", 1);
+        autoSpawnWorlds = getConfig().getStringList("auto-spawn.worlds");
+
         getLogger().info("Loaded base configuration for loot drop.");
+
+        startAutoSpawnTask();
+    }
+
+    private void startAutoSpawnTask() {
+        if (autoSpawnTask != null) {
+            autoSpawnTask.cancel();
+            autoSpawnTask = null;
+        }
+
+        if (!autoSpawnEnabled) {
+            getLogger().info("Auto-spawn is disabled.");
+            return;
+        }
+
+        long intervalTicks = Math.max(20L, autoSpawnIntervalSeconds * 20L);
+
+        autoSpawnTask = new BukkitRunnable() {
+            @Override
+            public void run() {
+                attemptAutoSpawn();
+            }
+        }.runTaskTimer(this, intervalTicks, intervalTicks);
+
+        getLogger().info("Auto-spawn enabled: every " + autoSpawnIntervalSeconds + "s, radius " +
+            autoSpawnRadius + ", min players " + autoSpawnMinPlayers);
+    }
+
+    private void attemptAutoSpawn() {
+        if (Bukkit.getOnlinePlayers().size() < autoSpawnMinPlayers) {
+            return;
+        }
+
+        List<org.bukkit.World> candidateWorlds = new ArrayList<>();
+        if (autoSpawnWorlds != null && !autoSpawnWorlds.isEmpty()) {
+            for (String worldName : autoSpawnWorlds) {
+                org.bukkit.World world = Bukkit.getWorld(worldName);
+                if (world != null) {
+                    candidateWorlds.add(world);
+                } else {
+                    getLogger().warning("Auto-spawn: configured world not found: " + worldName);
+                }
+            }
+        } else {
+            candidateWorlds.addAll(Bukkit.getWorlds());
+        }
+
+        if (candidateWorlds.isEmpty()) {
+            getLogger().warning("Auto-spawn: no valid worlds available to spawn in.");
+            return;
+        }
+
+        org.bukkit.World world = candidateWorlds.get(new Random().nextInt(candidateWorlds.size()));
+        Location center = world.getSpawnLocation();
+
+        Random random = new Random();
+        double angle = random.nextDouble() * 2 * Math.PI;
+        double distance = random.nextDouble() * autoSpawnRadius;
+
+        int x = (int) Math.round(center.getX() + Math.cos(angle) * distance);
+        int z = (int) Math.round(center.getZ() + Math.sin(angle) * distance);
+        int y = world.getHighestBlockYAt(x, z) + 1;
+
+        Location target = new Location(world, x + 0.5, y, z + 0.5);
+
+        spawnLootDrop(target);
+        getLogger().info("Auto-spawned a loot drop at " + x + ", " + y + ", " + z + " in world " + world.getName());
     }
 
     @Override
@@ -89,6 +184,7 @@ public class LootDropPlugin extends JavaPlugin implements Listener, TabCompleter
                 sender.sendMessage("§7/lootdrop spawn <x> <y> <z> [world] - Spawn a loot drop");
                 sender.sendMessage("§7/lootdrop reload - Reload configuration");
                 sender.sendMessage("§7/lootdrop list - List active loot drops");
+                sender.sendMessage("§7/lootdrop auto <on|off|status> - Control automatic spawning");
                 return true;
             }
 
@@ -116,8 +212,6 @@ public class LootDropPlugin extends JavaPlugin implements Listener, TabCompleter
                     spawnLootDrop(location);
                     sender.sendMessage("§aLoot drop initiated descent at " + x + ", " + y + ", " + z + " in world " + worldName);
 
-                    Bukkit.broadcastMessage("§6§l[LOOT DROP] §eA loot drop is incoming! Find the landing site!");
-
                 } catch (NumberFormatException e) {
                     sender.sendMessage("§cInvalid coordinates!");
                 }
@@ -125,7 +219,7 @@ public class LootDropPlugin extends JavaPlugin implements Listener, TabCompleter
             }
 
             if (args[0].equalsIgnoreCase("reload")) {
-                loadConfig(); 
+                loadConfig();
                 sender.sendMessage("§aConfiguration reloaded!");
                 return true;
             }
@@ -144,13 +238,42 @@ public class LootDropPlugin extends JavaPlugin implements Listener, TabCompleter
                 }
                 return true;
             }
+
+            if (args[0].equalsIgnoreCase("auto")) {
+                if (args.length < 2) {
+                    sender.sendMessage("§eAuto-spawn is currently " + (autoSpawnEnabled ? "§aENABLED" : "§cDISABLED") +
+                        "§e. Interval: " + autoSpawnIntervalSeconds + "s | Radius: " + autoSpawnRadius +
+                        " | Min players: " + autoSpawnMinPlayers);
+                    sender.sendMessage("§7Usage: /lootdrop auto <on|off|status>");
+                    return true;
+                }
+
+                if (args[1].equalsIgnoreCase("status")) {
+                    sender.sendMessage("§eAuto-spawn is currently " + (autoSpawnEnabled ? "§aENABLED" : "§cDISABLED"));
+                    return true;
+                }
+
+                if (args[1].equalsIgnoreCase("on")) {
+                    autoSpawnEnabled = true;
+                    startAutoSpawnTask();
+                    sender.sendMessage("§aAuto-spawn enabled (until next reload of config.yml, unless you also update the file).");
+                    return true;
+                }
+
+                if (args[1].equalsIgnoreCase("off")) {
+                    autoSpawnEnabled = false;
+                    startAutoSpawnTask();
+                    sender.sendMessage("§cAuto-spawn disabled (until next reload of config.yml, unless you also update the file).");
+                    return true;
+                }
+
+                sender.sendMessage("§cUsage: /lootdrop auto <on|off|status>");
+                return true;
+            }
         }
         return false;
     }
 
-    /**
-     * Handles tab completion for the /lootdrop command.
-     */
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (!command.getName().equalsIgnoreCase("lootdrop")) return null;
@@ -162,21 +285,29 @@ public class LootDropPlugin extends JavaPlugin implements Listener, TabCompleter
             completions.add("spawn");
             completions.add("reload");
             completions.add("list");
+            completions.add("auto");
 
             return completions.stream()
                 .filter(s -> s.toLowerCase().startsWith(args[0].toLowerCase()))
                 .collect(Collectors.toList());
         }
 
+        if (args[0].equalsIgnoreCase("auto") && args.length == 2) {
+            List<String> autoCompletions = Arrays.asList("on", "off", "status");
+            return autoCompletions.stream()
+                .filter(s -> s.toLowerCase().startsWith(args[1].toLowerCase()))
+                .collect(Collectors.toList());
+        }
+
         if (args[0].equalsIgnoreCase("spawn") && sender instanceof Player) {
             Player player = (Player) sender;
-            if (args.length == 2) { // X coordinate
+            if (args.length == 2) {
                 completions.add(String.valueOf((int)player.getLocation().getX()));
-            } else if (args.length == 3) { // Y coordinate
+            } else if (args.length == 3) {
                 completions.add(String.valueOf((int)player.getLocation().getY()));
-            } else if (args.length == 4) { // Z coordinate
+            } else if (args.length == 4) {
                 completions.add(String.valueOf((int)player.getLocation().getZ()));
-            } else if (args.length == 5) { // World names
+            } else if (args.length == 5) {
                 for (org.bukkit.World world : Bukkit.getWorlds()) {
                     completions.add(world.getName());
                 }
@@ -190,28 +321,56 @@ public class LootDropPlugin extends JavaPlugin implements Listener, TabCompleter
         return new ArrayList<>();
     }
 
-    /**
-     * Initiates the loot drop spawn process, including the descent animation.
-     * @param targetLocation The final landing location.
-     */
     private void spawnLootDrop(Location targetLocation) {
-        // Calculate the starting location for the fall animation
         Location startLocation = targetLocation.clone().add(0, fallHeight, 0);
 
-        // 1. Create the entity (it is marked as invisible in its constructor)
         LootDropEntity lootDrop = new LootDropEntity(startLocation, maxHealth, displayName, particleHeight);
         activeLootDrops.put(lootDrop.getUUID(), lootDrop);
-        
-        // 2. Start the falling animation
-        // This task will start the standard particle effect once the drop has landed.
+
         new LootDropFallTask(lootDrop, targetLocation, fallDurationTicks).runTaskTimer(this, 0L, 1L);
+
+        Bukkit.broadcastMessage(buildIncomingBroadcast(targetLocation));
 
         getLogger().info("Started loot drop fall from " + startLocation + " to " + targetLocation);
     }
 
-    /**
-     * Handles damage events to the loot drop.
-     */
+    private String buildIncomingBroadcast(Location targetLocation) {
+        String template = broadcastCoordinates ? spawnMessage : spawnMessageNoCoords;
+
+        String message = template
+            .replace("%x%", String.valueOf(targetLocation.getBlockX()))
+            .replace("%y%", String.valueOf(targetLocation.getBlockY()))
+            .replace("%z%", String.valueOf(targetLocation.getBlockZ()))
+            .replace("%world%", targetLocation.getWorld().getName());
+
+        return ChatColor.translateAlternateColorCodes('&', message);
+    }
+
+    private void despawnLootDrop(LootDropEntity lootDrop) {
+        if (!activeLootDrops.containsKey(lootDrop.getUUID())) {
+            return;
+        }
+
+        Location loc = lootDrop.getLocation();
+        activeLootDrops.remove(lootDrop.getUUID());
+        lootDrop.remove();
+
+        for (Player player : loc.getWorld().getPlayers()) {
+            if (player.getLocation().distance(loc) <= 50) {
+                player.sendMessage("§6§l[LOOT DROP] §7The loot drop has despawned...");
+            }
+        }
+
+        getLogger().info("Loot drop despawned (timeout) at " + loc.getBlockX() + ", " + loc.getBlockY() + ", " + loc.getBlockZ());
+    }
+
+    @EventHandler
+    public void onArmorStandManipulate(PlayerArmorStandManipulateEvent event) {
+        if (activeLootDrops.containsKey(event.getRightClicked().getUniqueId())) {
+            event.setCancelled(true);
+        }
+    }
+
     @EventHandler
     public void onEntityDamage(EntityDamageByEntityEvent event) {
         if (!(event.getEntity() instanceof ArmorStand)) return;
@@ -221,16 +380,14 @@ public class LootDropPlugin extends JavaPlugin implements Listener, TabCompleter
 
         if (lootDrop == null) return;
 
-        // Cancel the damage event completely to prevent vanilla damage mechanics
         event.setCancelled(true);
-        
-        double damage = event.getDamage(EntityDamageEvent.DamageModifier.BASE); // Get base damage
+
+        double damage = event.getDamage(EntityDamageEvent.DamageModifier.BASE);
         lootDrop.damage(damage);
 
-        // Play a sound for the attacker.
         if (event.getDamager() instanceof Player) {
             Player player = (Player) event.getDamager();
-            // Check config to see if we should play the custom hit sound
+
             if (useCustomHitSound) {
                 player.playSound(player.getLocation(), org.bukkit.Sound.BLOCK_ANVIL_PLACE, 0.5f, 1.5f);
             }
@@ -241,7 +398,6 @@ public class LootDropPlugin extends JavaPlugin implements Listener, TabCompleter
             lootDrop.remove();
             activeLootDrops.remove(lootDrop.getUUID());
 
-            // Broadcast message on destruction
             Location loc = lootDrop.getLocation();
             for (Player player : loc.getWorld().getPlayers()) {
                 if (player.getLocation().distance(loc) <= 50) {
@@ -252,23 +408,19 @@ public class LootDropPlugin extends JavaPlugin implements Listener, TabCompleter
         }
     }
 
-    /**
-     * Drops the actual loot items based on the configuration and chance rolls.
-     * @param location The location where the loot should be dropped.
-     */
     private void dropLoot(Location location) {
         List<ItemStack> actualLoot = new ArrayList<>();
         ConfigurationSection itemsSection = getConfig().getConfigurationSection("loot-drop.items");
-        
+
         if (itemsSection != null) {
             for (String key : itemsSection.getKeys(false)) {
                 String materialName = itemsSection.getString(key + ".material");
-                int amount = itemsSection.getInt(key + ".amount", 1);
+                int amount = resolveAmount(itemsSection, key);
                 double chance = itemsSection.getDouble(key + ".chance", 100.0);
-                
+
                 try {
                     Material material = Material.valueOf(materialName.toUpperCase());
-                    
+
                     if (Math.random() * 100 <= chance) {
                         actualLoot.add(new ItemStack(material, amount));
                     }
@@ -277,7 +429,7 @@ public class LootDropPlugin extends JavaPlugin implements Listener, TabCompleter
                 }
             }
         }
-        
+
         if (actualLoot.isEmpty()) {
             getLogger().warning("No loot items to drop!");
             return;
@@ -285,22 +437,55 @@ public class LootDropPlugin extends JavaPlugin implements Listener, TabCompleter
 
         getLogger().info("Dropping " + actualLoot.size() + " items at " + location);
 
+        Random random = new Random();
         for (ItemStack item : actualLoot) {
-            location.getWorld().dropItemNaturally(location, item.clone());
+            double angle = random.nextDouble() * 2 * Math.PI;
+            double distance = random.nextDouble() * itemDropRadius;
+            double dx = Math.cos(angle) * distance;
+            double dz = Math.sin(angle) * distance;
+
+            Location dropLocation = location.clone().add(dx, 0.5, dz);
+            location.getWorld().dropItemNaturally(dropLocation, item.clone());
         }
 
-        // Spawn explosion effects
         location.getWorld().spawnParticle(Particle.EXPLOSION, location.clone().add(0, 1, 0), 3, 0.5, 0.5, 0.5, 0);
         location.getWorld().spawnParticle(Particle.FIREWORK, location.clone().add(0, 1, 0), 50, 1, 1, 1, 0.1);
     }
-    
-    // =========================================================================
-    // NESTED CLASSES
-    // =========================================================================
 
-    /**
-     * Handles the logic for the continuous falling animation.
-     */
+    private int resolveAmount(ConfigurationSection itemsSection, String key) {
+        Object raw = itemsSection.get(key + ".amount", 1);
+
+        if (raw instanceof Number) {
+            return ((Number) raw).intValue();
+        }
+
+        String str = String.valueOf(raw).trim();
+
+        if (str.contains("-")) {
+            String[] parts = str.split("-", 2);
+            try {
+                int min = Integer.parseInt(parts[0].trim());
+                int max = Integer.parseInt(parts[1].trim());
+                if (max < min) {
+                    int temp = min;
+                    min = max;
+                    max = temp;
+                }
+                return min + new Random().nextInt((max - min) + 1);
+            } catch (NumberFormatException e) {
+                getLogger().warning("Invalid amount range '" + str + "' for item " + key + ", defaulting to 1");
+                return 1;
+            }
+        }
+
+        try {
+            return Integer.parseInt(str);
+        } catch (NumberFormatException e) {
+            getLogger().warning("Invalid amount '" + str + "' for item " + key + ", defaulting to 1");
+            return 1;
+        }
+    }
+
     private class LootDropFallTask extends BukkitRunnable {
 
         private final LootDropEntity lootDrop;
@@ -321,90 +506,99 @@ public class LootDropPlugin extends JavaPlugin implements Listener, TabCompleter
         @Override
         public void run() {
             if (currentTick >= totalTicks) {
-                // Animation finished
                 cancel();
-                
-                // Teleport to the final, precise location.
-                // Using 0.05 offset to ensure the chest sits cleanly on the ground block 
-                // and the ArmorStand hitbox/nametag are in the correct place for a non-marker entity.
-                lootDrop.getEntity().teleport(targetLocation.clone().add(0, 0.05, 0));
-                
-                // Start the particle beam effect
+
+                lootDrop.teleportTo(targetLocation.clone().add(0, 0.05, 0));
+
                 lootDrop.startParticleEffect();
-                
-                // Landing sound effect
-                // Using FLASH particle for compatibility and visual impact
-                targetLocation.getWorld().spawnParticle(Particle.FLASH, targetLocation, 1); 
+
+                lootDrop.scheduleDespawn(entityDespawnSeconds, () -> despawnLootDrop(lootDrop));
+
+                targetLocation.getWorld().spawnParticle(Particle.FLASH, targetLocation, 1);
                 targetLocation.getWorld().playSound(targetLocation, org.bukkit.Sound.ENTITY_GENERIC_EXPLODE, 3.0f, 0.5f);
-                
+
                 getLogger().info("Loot drop landed at " + targetLocation.getBlockX() + ", " + targetLocation.getBlockY() + ", " + targetLocation.getBlockZ());
                 return;
             }
 
-            // Calculate the progress (0.0 to 1.0)
             double progress = (double) currentTick / totalTicks;
-            
-            // Calculate the new Y position using linear interpolation
+
             double newY = startLocation.getY() - (totalDistance * progress);
-            
-            // Create the new location for teleport
+
             Location newLocation = new Location(
-                targetLocation.getWorld(), 
+                targetLocation.getWorld(),
                 targetLocation.getX(),
-                newY, 
+                newY,
                 targetLocation.getZ()
             );
-            
-            // Teleport the ArmorStand entity
-            lootDrop.getEntity().teleport(newLocation);
-            
-            // Spawn a smoke/trail effect below the dropping loot
+
+            lootDrop.teleportTo(newLocation);
+
             newLocation.getWorld().spawnParticle(Particle.CLOUD, newLocation.clone().add(0, 0.5, 0), 10, 0.2, 0.2, 0.2, 0.01);
-            
+
             currentTick++;
         }
     }
 
-    /**
-     * Manages the data and behavior of a single loot drop ArmorStand entity.
-     */
     private class LootDropEntity {
+        private static final double TEXT_DISPLAY_Y_OFFSET = 2.3;
+
         private final ArmorStand entity;
+        private final TextDisplay textDisplay;
+        private final UUID textDisplayUUID;
         private double health;
         private final double maxHealth;
         private BukkitRunnable particleTask;
+        private BukkitTask despawnTask;
         private final int particleHeight;
         private final String entityDisplayName;
+        private final org.bukkit.World world;
+        private final int chunkX;
+        private final int chunkZ;
+        private boolean chunkTicketHeld;
 
         public LootDropEntity(Location location, double maxHealth, String displayName, int particleHeight) {
             this.maxHealth = maxHealth;
             this.health = maxHealth;
             this.particleHeight = particleHeight;
             this.entityDisplayName = displayName;
+            this.world = location.getWorld();
+            this.chunkX = location.getBlockX() >> 4;
+            this.chunkZ = location.getBlockZ() >> 4;
 
-            // Spawn the ArmorStand
+            this.chunkTicketHeld = world.addPluginChunkTicket(chunkX, chunkZ, LootDropPlugin.this);
+
             this.entity = (ArmorStand) location.getWorld().spawnEntity(location, EntityType.ARMOR_STAND);
-            
-            // --- Appearance and Behavior Settings ---
-            entity.setVisible(false);         // Make the body invisible
-            entity.setGravity(false);         // Stop it from falling
-            entity.setInvulnerable(false);    // MUST be false to take damage (Hitbox enabled)
-            entity.setCustomNameVisible(true);
+
+            entity.setVisible(false);
+            entity.setGravity(false);
+            entity.setInvulnerable(false);
+            entity.setCustomNameVisible(false);
             entity.setBasePlate(false);
             entity.setArms(false);
-            // Glowing is disabled to prevent the invisible body's outline from showing.
-            
-            // Set the appearance (e.g., a Chest helmet)
+
             entity.getEquipment().setHelmet(new ItemStack(Material.CHEST));
-            
+
+            this.textDisplay = (TextDisplay) location.getWorld().spawnEntity(
+                location.clone().add(0, TEXT_DISPLAY_Y_OFFSET, 0), EntityType.TEXT_DISPLAY);
+            this.textDisplayUUID = textDisplay.getUniqueId();
+            textDisplay.setBillboard(Display.Billboard.CENTER);
+            textDisplay.setSeeThrough(true);
+            textDisplay.setShadowed(true);
+            textDisplay.setDefaultBackground(true);
+
             updateDisplay();
 
             getLogger().info("Created loot drop entity at " + location);
         }
 
-        /**
-         * Starts the continuous particle beam effect when the drop has landed.
-         */
+        public void teleportTo(Location loc) {
+            entity.teleport(loc);
+            if (textDisplay != null && textDisplay.isValid()) {
+                textDisplay.teleport(loc.clone().add(0, TEXT_DISPLAY_Y_OFFSET, 0));
+            }
+        }
+
         public void startParticleEffect() {
             if (particleTask != null) {
                 particleTask.cancel();
@@ -422,7 +616,6 @@ public class LootDropPlugin extends JavaPlugin implements Listener, TabCompleter
 
                     Location loc = entity.getLocation();
 
-                    // Create stationary particle beam from above
                     for (int i = 0; i < particleHeight; i += 3) {
                         Location particleLoc = loc.clone().add(0, i, 0);
                         entity.getWorld().spawnParticle(
@@ -435,7 +628,6 @@ public class LootDropPlugin extends JavaPlugin implements Listener, TabCompleter
                         );
                     }
 
-                    // Rotating particles around the entity
                     double radius = 1.5;
                     double y = 1.0;
                     for (int i = 0; i < 3; i++) {
@@ -452,11 +644,22 @@ public class LootDropPlugin extends JavaPlugin implements Listener, TabCompleter
                             0
                         );
                     }
-                    
+
                     ticks++;
                 }
             };
             particleTask.runTaskTimer(LootDropPlugin.this, 0L, 5L);
+        }
+
+        public void scheduleDespawn(int seconds, Runnable onDespawn) {
+            if (seconds <= 0) return;
+
+            despawnTask = new BukkitRunnable() {
+                @Override
+                public void run() {
+                    onDespawn.run();
+                }
+            }.runTaskLater(LootDropPlugin.this, seconds * 20L);
         }
 
         public void damage(double amount) {
@@ -464,7 +667,6 @@ public class LootDropPlugin extends JavaPlugin implements Listener, TabCompleter
             if (health < 0) health = 0;
             updateDisplay();
 
-            // Damage particle effect
             entity.getWorld().spawnParticle(
                 Particle.DAMAGE_INDICATOR,
                 entity.getLocation().clone().add(0, 1.5, 0),
@@ -472,16 +674,19 @@ public class LootDropPlugin extends JavaPlugin implements Listener, TabCompleter
                 0.3, 0.3, 0.3,
                 0
             );
-
-            // The custom sound logic is now in the main event handler.
         }
 
         private void updateDisplay() {
             double percentage = (health / maxHealth) * 100;
             String healthBar = getHealthBar(percentage);
             String formattedName = formatName(entityDisplayName);
-            // Update the display name with the health bar
-            entity.setCustomName(formattedName + " §7[" + healthBar + "§7] §c" + (int)health + "§7/§c" + (int)maxHealth + " HP");
+
+            String line1 = formattedName;
+            String line2 = "§7[" + healthBar + "§7] §c" + (int) health + "§7/§c" + (int) maxHealth + " HP";
+
+            if (textDisplay != null && textDisplay.isValid()) {
+                textDisplay.setText(line1 + "\n" + line2);
+            }
         }
 
         private String getHealthBar(double percentage) {
@@ -518,7 +723,7 @@ public class LootDropPlugin extends JavaPlugin implements Listener, TabCompleter
         public UUID getUUID() {
             return entity.getUniqueId();
         }
-        
+
         public ArmorStand getEntity() {
             return entity;
         }
@@ -527,8 +732,27 @@ public class LootDropPlugin extends JavaPlugin implements Listener, TabCompleter
             if (particleTask != null) {
                 particleTask.cancel();
             }
-            if (entity != null) {
+            if (despawnTask != null) {
+                despawnTask.cancel();
+            }
+
+            Entity liveEntity = Bukkit.getEntity(getUUID());
+            if (liveEntity != null) {
+                liveEntity.remove();
+            } else if (entity != null && entity.isValid()) {
                 entity.remove();
+            }
+
+            Entity liveText = textDisplayUUID != null ? Bukkit.getEntity(textDisplayUUID) : null;
+            if (liveText != null) {
+                liveText.remove();
+            } else if (textDisplay != null && textDisplay.isValid()) {
+                textDisplay.remove();
+            }
+
+            if (chunkTicketHeld) {
+                world.removePluginChunkTicket(chunkX, chunkZ, LootDropPlugin.this);
+                chunkTicketHeld = false;
             }
         }
     }
