@@ -1,5 +1,5 @@
 name: LootDrop
-version: 1.0.0
+version: 1.1.0
 main: com.starmaster.lootdrop.LootDropPlugin
 api-version: 1.21
 author: StarMaster
@@ -8,7 +8,7 @@ description: Allows admins to spawn loot drop events with customizable entities
 commands:
   lootdrop:
     description: Main loot drop command
-    usage: /lootdrop <spawn|reload>
+    usage: /lootdrop <spawn|reload|list|auto>
     aliases: [ld, lootdrops]
     permission: lootdrop.admin
 
