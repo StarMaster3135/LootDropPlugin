@@ -11,14 +11,43 @@ loot-drop:
   # Height of the particle beam effect (in blocks)
   particle-height: 50
 
+  # Controls how the loot drop falls from the sky before landing.
+  fall-animation:
+    # How high above the landing spot the loot drop starts falling from (in blocks).
+    height: 20
+    # How long the fall takes, in ticks (20 ticks = 1 second).
+    # Lower = faster fall, higher = slower fall.
+    duration-ticks: 60
+
   # Changes the sound when you hit the lootdrop
   use-custom-hit-sound: true
+
+  # Whether the "a loot drop is incoming" broadcast includes the landing coordinates.
+  # If false, spawn-message-no-coords is used instead of spawn-message.
+  broadcast-coordinates: true
+
+  # Message broadcast to everyone when a loot drop spawns (used when broadcast-coordinates is true).
+  # Supports & color codes and these placeholders: %x% %y% %z% %world%
+  spawn-message: "&6&l[LOOT DROP] &eA loot drop is incoming! &7[%x%, %y%, %z% &7in &f%world%&7]"
+
+  # Message broadcast to everyone when a loot drop spawns (used when broadcast-coordinates is false).
+  # Supports & color codes. Placeholders %x% %y% %z% %world% also work here if you want them.
+  spawn-message-no-coords: "&6&l[LOOT DROP] &eA loot drop is incoming! &eFind the landing site!"
+
+  # How long (in seconds) a loot drop stays active before automatically despawning
+  # if nobody manages to destroy it. Set to 0 to disable (it will never expire on its own).
+  entity-despawn-seconds: 300
+
+  # How far (in blocks, horizontal radius) the loot can be flung/scattered around the
+  # loot drop's location once it's destroyed. Set to 0 for all loot to drop in one spot.
+  item-drop-radius: 3.0
   
   # Items that will drop when the loot drop is destroyed
+  # "amount" can be a fixed number (e.g. 5) or a range (e.g. "5-10") to pick randomly from.
   items:
     item1:
       material: DIAMOND
-      amount: 5
+      amount: "5-10"
       chance: 100.0  # 100% chance to drop
     
     item2:
@@ -58,3 +87,26 @@ loot-drop:
 
 # Add more items as needed following the same format
 # Available materials: https://hub.spigotmc.org/javadocs/bukkit/org/bukkit/Material.html
+
+# Settings for loot drops that spawn automatically on their own, without an admin
+# needing to run /lootdrop spawn.
+auto-spawn:
+  # Whether automatic loot drop spawning is turned on.
+  enabled: true
+
+  # How often (in seconds) the plugin attempts to spawn a new loot drop.
+  # 1800 seconds = 30 minutes.
+  spawn-interval-seconds: 1800
+
+  # Radius (in blocks) around a world's spawn point in which the loot drop is allowed
+  # to randomly land. The landing spot is placed on the highest solid block found.
+  spawn-radius: 500
+
+  # Minimum number of players that must be online for an automatic loot drop to spawn.
+  # If fewer players are online when it's time to spawn, that attempt is skipped
+  # (it will try again at the next interval).
+  min-players-online: 1
+
+  # Which worlds automatic loot drops are allowed to spawn in, by world name.
+  # Leave this empty ([]) to allow spawning in every loaded world.
+  worlds: []
