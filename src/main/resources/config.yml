@@ -1,6 +1,12 @@
 # LootDrop Plugin Configuration
 # Configure your loot drop events here
 
+# Whether this plugin sends anonymous usage statistics to bStats (https://bstats.org).
+# This helps the developer see how many servers use the plugin. No personal or
+# server-identifying data is collected. Set to false to opt out.
+metrics:
+  enabled: true
+
 loot-drop:
   # Maximum health of the loot drop entity
   max-health: 500.0
