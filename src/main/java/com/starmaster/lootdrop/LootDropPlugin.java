@@ -24,6 +24,7 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
+import org.bstats.bukkit.Metrics;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -55,6 +56,14 @@ public class LootDropPlugin extends JavaPlugin implements Listener, TabCompleter
     public void onEnable() {
         saveDefaultConfig();
         loadConfig();
+
+        if (getConfig().getBoolean("metrics.enabled", true)) {
+            int pluginId = 33512;
+            new Metrics(this, pluginId);
+            getLogger().info("bStats metrics enabled. You can disable this in config.yml (metrics.enabled).");
+        } else {
+            getLogger().info("bStats metrics disabled via config.yml.");
+        }
 
         getServer().getPluginManager().registerEvents(this, this);
         getCommand("lootdrop").setTabCompleter(this);
@@ -514,7 +523,7 @@ public class LootDropPlugin extends JavaPlugin implements Listener, TabCompleter
 
                 lootDrop.scheduleDespawn(entityDespawnSeconds, () -> despawnLootDrop(lootDrop));
 
-                targetLocation.getWorld().spawnParticle(Particle.FLASH, targetLocation, 1);
+                targetLocation.getWorld().spawnParticle(Particle.FLASH, targetLocation, 1, 0, 0, 0, 0, org.bukkit.Color.WHITE);
                 targetLocation.getWorld().playSound(targetLocation, org.bukkit.Sound.ENTITY_GENERIC_EXPLODE, 3.0f, 0.5f);
 
                 getLogger().info("Loot drop landed at " + targetLocation.getBlockX() + ", " + targetLocation.getBlockY() + ", " + targetLocation.getBlockZ());
